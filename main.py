@@ -1,7 +1,4 @@
-import numpy
 import argparse
-from collections import defaultdict
-import numpy as np
 
 
 def get_resistor_values():
@@ -29,46 +26,207 @@ def get_resistor_values():
     return e_series_value
 
 
+def get_all_resistor_values(base_values, min_val=None, max_val=None):
+    """Generate all resistor values by multiplying base values with powers of 10."""
+    # Default range: 1 ohm to 10M ohm
+    if min_val is None:
+        min_val = 1
+    if max_val is None:
+        max_val = 10e6
+
+    resistors = []
+    for exp in range(-1, 8):  # 0.1 to 10M range
+        multiplier = 10 ** exp
+        for base in base_values:
+            value = base * multiplier
+            if min_val <= value <= max_val:
+                resistors.append(value)
+    return sorted(set(resistors))
+
+
+def format_resistor_value(value):
+    """Format resistor value with appropriate unit."""
+    if value >= 1e6:
+        return f"{value/1e6:.3g}M"
+    elif value >= 1e3:
+        return f"{value/1e3:.3g}k"
+    else:
+        return f"{value:.3g}"
+
+
+def find_best_pairs_by_ratio(resistor_values, target_ratio, top_n=5, min_val=None, max_val=None):
+    """Find best resistor pairs for a given ratio R1/R2."""
+    pairs = []
+
+    for r1 in resistor_values:
+        for r2 in resistor_values:
+            # Apply min/max constraints if specified
+            if min_val is not None and (r1 < min_val or r2 < min_val):
+                continue
+            if max_val is not None and (r1 > max_val or r2 > max_val):
+                continue
+
+            actual_ratio = r1 / r2
+            error = abs(actual_ratio - target_ratio) / target_ratio
+            pairs.append({
+                'r1': r1,
+                'r2': r2,
+                'ratio': actual_ratio,
+                'error': error
+            })
+
+    # Sort by error and return top N
+    pairs.sort(key=lambda x: x['error'])
+    return pairs[:top_n]
+
+
+def find_best_pairs_by_voltage_ratio(resistor_values, voltage_ratio, top_n=10, min_val=None, max_val=None):
+    """
+    Find best resistor pairs for voltage divider.
+    Voltage ratio = Vout/Vin = R2/(R1+R2)
+    """
+    pairs = []
+
+    for r1 in resistor_values:
+        for r2 in resistor_values:
+            # Apply min/max constraints if specified
+            if min_val is not None and (r1 < min_val or r2 < min_val):
+                continue
+            if max_val is not None and (r1 > max_val or r2 > max_val):
+                continue
+
+            actual_voltage_ratio = r2 / (r1 + r2)
+            error = abs(actual_voltage_ratio - voltage_ratio) / voltage_ratio
+            pairs.append({
+                'r1': r1,
+                'r2': r2,
+                'voltage_ratio': actual_voltage_ratio,
+                'error': error
+            })
+
+    # Sort by error and return top N
+    pairs.sort(key=lambda x: x['error'])
+    return pairs[:top_n]
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Calculate Resistor Pair with Given Ratio")
-    parser.add_argument('series', choices=['E6', 'E12', 'E24', 'E48', 'E96'], help='The E series of the resistor value')
-    parser.add_argument('-r', '--ratio', type=float, help='The desired voltage ratio')
+    parser = argparse.ArgumentParser(
+        description="Calculate Resistor Pair for Voltage Divider or Ratio Matching",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Find resistor pairs for 0.5 voltage ratio (Vout/Vin = 0.5)
+  python main.py E24 -v 0.5
+
+  # Find resistor pairs for resistor ratio R1/R2 = 2.5
+  python main.py E24 -r 2.5
+
+  # With resistor value constraints (1k to 100k)
+  python main.py E24 -r 2.5 --min 1000 --max 100000
+
+Voltage Divider Circuit:
+  Vin ---[R1]---+---[R2]--- GND
+                |
+               Vout
+
+  Vout/Vin = R2/(R1+R2)
+        """
+    )
+    parser.add_argument('series', choices=['E6', 'E12', 'E24', 'E48', 'E96'],
+                        help='The E series of the resistor value')
+
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument('-v', '--voltage-ratio', type=float,
+                            help='Voltage divider ratio Vout/Vin (must be between 0 and 1)')
+    mode_group.add_argument('-r', '--ratio', type=float,
+                            help='Direct resistor ratio R1/R2')
+
+    parser.add_argument('--min', type=float, default=None,
+                        help='Minimum resistor value in ohms (e.g., 1000 for 1k)')
+    parser.add_argument('--max', type=float, default=None,
+                        help='Maximum resistor value in ohms (e.g., 100000 for 100k)')
+    parser.add_argument('-n', '--top', type=int, default=5,
+                        help='Number of top matches to display (default: 5)')
 
     args = parser.parse_args()
 
-    # Get resistor values
-    e_series_values = np.array(get_resistor_values()[args.series])
-    resistor_ratio = 0
-    voltage_ratio = args.ratio / (1 - args.ratio)
-    counter_voltage_ratio_n = 0
-    while voltage_ratio <= 0.1 or voltage_ratio >= 10:
-        if voltage_ratio <= 0.1:
-            voltage_ratio = voltage_ratio * 10
-            counter_voltage_ratio_n -= 1
-        else:
-            voltage_ratio = voltage_ratio / 10
-            counter_voltage_ratio_n += 1
-    resistor_ratio_list = []
-    resistor_pair_dict = defaultdict(lambda: defaultdict())
-    pair_index = 0
-    for i in range(e_series_values.shape[0]):
-        for j in range(e_series_values.shape[0]):
-            pair_index += 1
-            resistor_ratio = e_series_values[i] / e_series_values[j]
-            resistor_ratio_list.append(resistor_ratio)
-            resistor_pair_dict[f'pair {pair_index}']['resistor 1'] = e_series_values[i]
-            resistor_pair_dict[f'pair {pair_index}']['resistor 2'] = e_series_values[j]
-            resistor_pair_dict[f'pair {pair_index}']['resistor ratio'] = resistor_ratio
+    # Validate voltage ratio
+    if args.voltage_ratio is not None:
+        if args.voltage_ratio <= 0 or args.voltage_ratio >= 1:
+            parser.error("Voltage ratio must be between 0 and 1 (exclusive)")
 
-    resistor_ratio_array = np.array(resistor_ratio_list)
-    resistor_ratio_diff = np.abs(resistor_ratio_array - voltage_ratio)
-    resistor_ratio_index_sort = np.argsort(resistor_ratio_diff)[:10]
-    resistor_pair_dict_keys = list(resistor_pair_dict.keys())
-    for i in range(10):
-        resistor_1 = resistor_pair_dict[resistor_pair_dict_keys[resistor_ratio_index_sort[i]]]['resistor 1'] * pow(10, counter_voltage_ratio_n)
-        resistor_2 = resistor_pair_dict[resistor_pair_dict_keys[resistor_ratio_index_sort[i]]]['resistor 2']
-        print('No. %i Match resistor pair: %f Ohms and %f Ohms' % (i+1, resistor_1, resistor_2))
+    # Validate ratio
+    if args.ratio is not None:
+        if args.ratio <= 0:
+            parser.error("Resistor ratio must be greater than 0")
+
+    # Validate min/max
+    if args.min is not None and args.max is not None:
+        if args.min >= args.max:
+            parser.error("Minimum value must be less than maximum value")
+
+    # Get base E-series values
+    base_values = get_resistor_values()[args.series]
+
+    # Generate all resistor values within range
+    resistor_values = get_all_resistor_values(base_values, args.min, args.max)
+
+    if len(resistor_values) == 0:
+        print("Error: No resistor values available in the specified range.")
+        return
+
+    if args.voltage_ratio is not None:
+        # Voltage divider mode
+        print(f"\nVoltage Divider Mode: Vout/Vin = {args.voltage_ratio}")
+        print(f"E-Series: {args.series}")
+        if args.min or args.max:
+            min_str = format_resistor_value(args.min) if args.min else "none"
+            max_str = format_resistor_value(args.max) if args.max else "none"
+            print(f"Resistor range: {min_str} - {max_str}")
+        print("-" * 60)
+
+        pairs = find_best_pairs_by_voltage_ratio(
+            resistor_values, args.voltage_ratio, args.top, args.min, args.max
+        )
+
+        if not pairs:
+            print("No matching pairs found in the specified range.")
+            return
+
+        print(f"{'No.':<4} {'R1':<12} {'R2':<12} {'Vout/Vin':<12} {'Error':<10}")
+        print("-" * 60)
+        for i, pair in enumerate(pairs, 1):
+            r1_str = format_resistor_value(pair['r1'])
+            r2_str = format_resistor_value(pair['r2'])
+            error_str = f"{pair['error']*100:.4f}%"
+            print(f"{i:<4} {r1_str:<12} {r2_str:<12} {pair['voltage_ratio']:<12.6f} {error_str:<10}")
+
+    else:
+        # Ratio mode
+        print(f"\nResistor Ratio Mode: R1/R2 = {args.ratio}")
+        print(f"E-Series: {args.series}")
+        if args.min or args.max:
+            min_str = format_resistor_value(args.min) if args.min else "none"
+            max_str = format_resistor_value(args.max) if args.max else "none"
+            print(f"Resistor range: {min_str} - {max_str}")
+        print("-" * 60)
+
+        pairs = find_best_pairs_by_ratio(
+            resistor_values, args.ratio, args.top, args.min, args.max
+        )
+
+        if not pairs:
+            print("No matching pairs found in the specified range.")
+            return
+
+        print(f"{'No.':<4} {'R1':<12} {'R2':<12} {'R1/R2':<12} {'Error':<10}")
+        print("-" * 60)
+        for i, pair in enumerate(pairs, 1):
+            r1_str = format_resistor_value(pair['r1'])
+            r2_str = format_resistor_value(pair['r2'])
+            error_str = f"{pair['error']*100:.4f}%"
+            print(f"{i:<4} {r1_str:<12} {r2_str:<12} {pair['ratio']:<12.6f} {error_str:<10}")
+
 
 if __name__ == "__main__":
     main()
-
